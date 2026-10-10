@@ -28,6 +28,14 @@ Ref2VA rewrites use `subject_definitions`, `summary`, `retention_analysis`, `det
 
 Read `references/ref-en.txt` for label rules, retention analysis, and complete examples.
 
+## Production Lessons
+
+- Direct each shot at action-beat level: establish the starting pose, what causes the movement, the movement and response, and the ending composition. Specify the camera path and hold; a shot's duration is not a substitute for concrete choreography.
+- For spoken lines, preserve the user's wording and give a performable delivery arc: pace, pauses, breaths, emphasis, and emotional change. Leave enough time for the line. When voice quality matters, listen to the generated result; an audio track or successful job status does not prove that the delivery sounds natural or emotionally right.
+- For segmented videos, state what the opening inherits from the previous segment and what visual element hands off to the next. Make each prompt self-contained. Describe a reference image by its actual role; a generic image slot can guide continuity but does not guarantee an exact frame lock.
+- Separate identity references from style anchors. A character sheet should lock appearance and wardrobe; when a style must carry across different people or locations, define the shared palette, lighting, texture, realism, and camera language explicitly.
+- Unless the user explicitly wants generated lettering, reserve titles, dates, and other readable text for post-production. For historical stories, check the chronology and distinguish symbolic transitions from literal events.
+
 ## Output Rules
 
 - Write rewrite sections in English; preserve dialogue, lyrics, and visible scene text in their original language.

@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.data/
+**/*.journal.json
+**/*journal*.json
+**/*.tmp
+**/.runninghub-h3-service/
+*.log

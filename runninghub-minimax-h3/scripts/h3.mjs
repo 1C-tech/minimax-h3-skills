@@ -1,58 +1,54 @@
-import {readFile,rename,open,mkdir} from 'node:fs/promises';
-import {dirname,resolve} from 'node:path';
+import {readFile,open,mkdir,rename} from 'node:fs/promises';
+import {dirname,resolve,join} from 'node:path';
+import {homedir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
-export function localBase(value='http://127.0.0.1:4317'){
- const u=new URL(value); if(u.protocol!=='http:'||!['127.0.0.1','localhost','[::1]'].includes(u.hostname)||u.username||u.password||u.search||u.hash||u.pathname!=='/')throw Error('Only a loopback Manju service is allowed');return u.origin;
+
+function localBase(value=`http://127.0.0.1:${process.env.RH_H3_PORT||'4317'}`){
+  const url=new URL(value);if(url.protocol!=='http:'||url.hostname!=='127.0.0.1'||url.username||url.password||url.search||url.hash||url.pathname!=='/')throw Error('Only the local independent RunningHub H3 service is supported.');return url.origin;
 }
-export async function api(base,path,body){
- const response=await fetch(base+path,{method:body===undefined?'GET':'POST',headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(45000)});
- const result=await response.json();if(!response.ok)throw Error(result.error||result.message||'Manju request failed');return result;
+function dataDirectory(){return resolve(process.env.RH_H3_HOME||join(homedir(),'.runninghub-h3-service'));}
+async function token(){const value=(await readFile(join(dataDirectory(),'service.token'),'utf8')).trim();if(!/^[a-f0-9]{64}$/.test(value))throw Error('Independent H3 service token is invalid; start the service first.');return value;}
+async function request(base,path,body){
+  let response;try{response=await fetch(base+path,{method:body===undefined?'GET':'POST',headers:{Authorization:`Bearer ${await token()}`,...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(45000)});}catch{throw Error('Independent H3 service is not reachable. Start it with node service/cli.mjs start.');}
+  let result;try{result=await response.json();}catch{throw Error('Independent H3 service returned an unreadable response.');}
+  if(!response.ok)throw Error(result.error||`Independent H3 service returned HTTP ${response.status}.`);return result;
 }
-async function save(path,state){await mkdir(dirname(path),{recursive:true});const temp=path+'.'+randomUUID()+'.tmp';const h=await open(temp,'wx');try{await h.writeFile(JSON.stringify(state,null,2));await h.sync();}finally{await h.close();}await rename(temp,path);}
-async function importReference(base,projectId,ref){
- const path=resolve(ref.path);const mime=ref.mimeType||({'png':'image/png','jpg':'image/jpeg','jpeg':'image/jpeg','webp':'image/webp','mp3':'audio/mpeg','wav':'audio/wav','ogg':'audio/ogg','mp4':'video/mp4','webm':'video/webm'}[path.split('.').at(-1).toLowerCase()]);
- if(!mime)throw Error('Unsupported reference file type: '+path);
- const bytes=await readFile(path);const form=new FormData();form.append('file',new Blob([bytes],{type:mime}),path.split(/[\\/]/).at(-1));
- const response=await fetch(base+'/api/projects/'+encodeURIComponent(projectId)+'/assets',{method:'POST',body:form,signal:AbortSignal.timeout(120000)});
- const doc=await response.json();if(!response.ok)throw Error(doc.error||doc.message||'Reference import failed');
- const asset=doc.assets.at(-1);if(!asset)throw Error('Import returned no asset');
- return {assetId:asset.id,kind:ref.kind||mime.split('/')[0],role:ref.role||'reference'};
+async function save(path,state){await mkdir(dirname(path),{recursive:true});const temp=path+'.'+randomUUID()+'.tmp',handle=await open(temp,'wx');try{await handle.writeFile(JSON.stringify(state,null,2));await handle.sync();}finally{await handle.close();}await rename(temp,path);}
+async function readPrompt(manifest,manifestPath){
+  if(typeof manifest.prompt==='string')return manifest.prompt;
+  if(typeof manifest.promptFile==='string')return readFile(resolve(dirname(manifestPath),manifest.promptFile),'utf8');
+  throw Error('manifest needs prompt or promptFile.');
 }
+function parseFlags(args){const flags={};for(let i=0;i<args.length;i+=2){if(!args[i]?.startsWith('--')||!args[i+1])throw Error('Expected --name value.');flags[args[i].slice(2)]=args[i+1];}return flags;}
+function publicResult(path,job,extra={}){return {journal:path,jobId:job.id,operationId:job.operationId,taskId:job.taskId??null,keyId:job.keyId??null,accountGroup:job.accountGroup??null,status:job.status,appId:job.appId,parameters:job.parameters,schemaFingerprint:job.schemaFingerprint,usage:job.usage??null,error:job.error??null,lastQueryError:job.lastQueryError??null,outputs:job.outputs??[],...extra};}
+
 export async function run(args){
- const [action,...rest]=args;const flags={};for(let i=0;i<rest.length;i+=2){if(!rest[i].startsWith('--')||!rest[i+1])throw Error('Expected --name value');flags[rest[i].slice(2)]=rest[i+1];}
- if(!['prepare','generate','status','resume'].includes(action)||!flags.journal)throw Error('Usage: node h3.mjs prepare --manifest input.json --journal NEW.json [--base URL]; generate|status|resume --journal SAME.json');
- const path=resolve(flags.journal);
- if(action==='prepare'){
-   if(!flags.manifest)throw Error('prepare requires --manifest');
-   const manifest=JSON.parse(await readFile(resolve(flags.manifest),'utf8'));
-   const base=localBase(flags.base);
-   const health=await api(base,'/api/health');if(!health)throw Error('Manju service unavailable');
-   await mkdir(dirname(path),{recursive:true});
-   const h=await open(path,'wx');await h.close();
-   const state={version:1,base,operationId:randomUUID(),phase:'preparing',projectId:manifest.projectId||null,input:{prompt:manifest.prompt??await readFile(resolve(manifest.promptFile),'utf8'),references:[],parameters:manifest.parameters||{}},imported:[]};
-   await save(path,state);
-   if(!state.projectId){const doc=await api(base,'/api/projects',{title:manifest.title||'MiniMax H3 独立生成',brief:'用户提示词与参考媒体直接生成',settings:{style:'',aspectRatio:['16:9','9:16','1:1','3:4'].includes(manifest.parameters?.aspectRatio)?manifest.parameters.aspectRatio:'16:9',videoAppId:'2084320751339032577',autoRun:false}});state.projectId=doc.project.id;await save(path,state);}
-   for(const ref of manifest.references||[]){state.input.references.push(ref.assetId?{assetId:ref.assetId,kind:ref.kind,role:ref.role||'reference'}:await importReference(base,state.projectId,ref));state.imported.push(ref.path||ref.assetId);await save(path,state);}
-   state.preview=await api(base,'/api/projects/'+state.projectId+'/h3/prepare',state.input);
-   state.expectedRevision=(await api(base,'/api/projects/'+state.projectId)).project.revision;
-   state.phase='prepared';await save(path,state);return {journal:path,projectId:state.projectId,...state.preview};
- }
- const state=JSON.parse(await readFile(path,'utf8'));const base=localBase(state.base);
- if(action==='generate'){
-   if(!['prepared','submitting','submitted'].includes(state.phase))throw Error('Journal is not prepared');
-   if(!state.jobId){
-     state.phase='submitting';await save(path,state);
-     const job=await api(base,'/api/projects/'+state.projectId+'/h3/generate',{input:state.input,operationId:state.operationId,expectedRevision:state.expectedRevision});
-     state.jobId=job.id;state.phase='submitted';await save(path,state);
-   }
- }
- if(!state.jobId){const jobs=await api(base,'/api/projects/'+state.projectId+'/jobs');const existing=jobs.find(j=>j.operationId==='h3:'+state.operationId);if(existing){state.jobId=existing.id;state.phase='submitted';await save(path,state);}else throw Error('No known job. generate replays the same local operation ID; resume never submits.');}
- const jobs=await api(base,'/api/projects/'+state.projectId+'/jobs');const job=jobs.find(j=>j.id===state.jobId);if(!job)throw Error('Job missing; do not submit again');
- const doc=await api(base,'/api/projects/'+state.projectId);const outputs=doc.assets.filter(a=>a.sourceJobId===job.id);
- return {journal:path,projectId:state.projectId,jobId:job.id,status:job.status,usage:job.usage??null,error:job.error??null,stale:job.result?.stale??false,outputs:outputs.map(a=>({path:a.path,mimeType:a.mimeType,status:a.status,metadata:a.metadata}))};
-}
-if(process.argv[1]&&resolve(process.argv[1])===resolve(fileURLToPath(import.meta.url))){
- run(process.argv.slice(2)).then(r=>console.log(JSON.stringify(r,null,2))).catch(e=>{console.error(e.message);process.exitCode=1;});
+  const [action,...rest]=args,flags=parseFlags(rest);
+  if(!['prepare','generate','status','resume'].includes(action)||!flags.journal)throw Error('Usage: node scripts/h3.mjs prepare --manifest INPUT.json --journal NEW.json [--base http://127.0.0.1:4317]; generate|status|resume --journal SAME.json');
+  const journalPath=resolve(flags.journal),base=localBase(flags.base||process.env.RH_H3_BASE);
+  if(action==='prepare'){
+    if(!flags.manifest)throw Error('prepare requires --manifest.');
+    const manifestPath=resolve(flags.manifest),manifest=JSON.parse(await readFile(manifestPath,'utf8'));
+    const input={prompt:await readPrompt(manifest,manifestPath),references:(manifest.references||[]).map(ref=>({path:ref.path,kind:ref.kind,role:ref.role||'reference'})),parameters:manifest.parameters||{},...(typeof manifest.keyId==='string'?{keyId:manifest.keyId}:{})};
+    let state;try{state=JSON.parse(await readFile(journalPath,'utf8'));}catch(error){if(error.code!=='ENOENT')throw Error('Journal exists but is unreadable.');}
+    if(state&&state.phase!=='preparing')throw Error('Journal already contains a prepared operation; choose a new journal for new input.');
+    if(state&&!state.operationId)throw Error('Existing preparation journal has no operationId.');
+    if(!state){await mkdir(dirname(journalPath),{recursive:true});const placeholder=await open(journalPath,'wx');await placeholder.close();state={version:1,base,operationId:randomUUID(),phase:'preparing',input};await save(journalPath,state);}
+    else if(JSON.stringify(state.input)!==JSON.stringify(input))throw Error('This preparation journal belongs to different input.');
+    const healthResponse=await fetch(base+'/api/health',{signal:AbortSignal.timeout(5000)});const health=await healthResponse.json();if(!healthResponse.ok||health.service!=='runninghub-minimax-h3-independent')throw Error('Independent H3 service health check did not match.');
+    const result=await request(base,'/api/h3/prepare',{operationId:state.operationId,...input});
+    state.jobId=result.job.id;state.phase='prepared';state.preview={appId:result.appId,parameters:result.parameters,schemaFingerprint:result.schemaFingerprint,references:result.references,notes:result.notes};await save(journalPath,state);
+    return {journal:journalPath,jobId:state.jobId,operationId:state.operationId,keyId:result.job.keyId??null,accountGroup:result.job.accountGroup??null,status:result.job.status,...state.preview};
+  }
+  const state=JSON.parse(await readFile(journalPath,'utf8'));if(state.base!==base)throw Error('Journal service URL does not match this call; use the original --base.');if(!state.jobId)throw Error('Journal has no prepared service job.');
+  if(action==='generate'){
+    state.phase='queue_requested';await save(journalPath,state);
+    const result=await request(base,`/api/jobs/${encodeURIComponent(state.jobId)}/submit`,{});state.phase=result.job.status==='queued'?'queued':result.job.status;await save(journalPath,state);return publicResult(journalPath,result.job);
+  }
+  const result=await request(base,`/api/jobs/${encodeURIComponent(state.jobId)}`);state.phase=result.job.status;await save(journalPath,state);return publicResult(journalPath,result.job);
 }
 
+if(process.argv[1]&&resolve(process.argv[1])===resolve(fileURLToPath(import.meta.url))){
+  run(process.argv.slice(2)).then(result=>process.stdout.write(JSON.stringify(result,null,2)+'\n')).catch(error=>{process.stderr.write((error instanceof Error?error.message:'H3 command failed.')+'\n');process.exitCode=1;});
+}
